@@ -3,6 +3,10 @@ const cors = require("cors");
 const axios = require("axios");
 const PDFDocument = require("pdfkit");
 require("dotenv").config();
+// CommonJS version
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const fs = require("fs");
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -15,6 +19,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 const REPLICATE_API_KEY = process.env.REPLICATE_API_KEY;
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 app.post("/api/generate-plan", async (req, res) => {
   try {
@@ -202,176 +208,31 @@ RESPONSE FORMAT - RETURN ONLY THIS JSON (no extra text):
   }
 });
 
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const SEARCH_ENGINE_ID = process.env.SEARCH_ENGINE_ID;
 
 app.post("/api/generate-image", async (req, res) => {
   try {
-    const { itemName, type } = req.body;
+    const { itemName ,type } = req.body;
+    
+    const query = itemName;
+    if (!query) return res.status(400).json({ error: "Missing query" });
 
-    if (!itemName || !type) {
-      return res.status(400).json({ error: "Missing itemName or type" });
-    }
+    const url = `https://www.googleapis.com/customsearch/v1?q=${encodeURIComponent(
+      query
+    )}&cx=${SEARCH_ENGINE_ID}&key=${GOOGLE_API_KEY}&searchType=image&num=1`;
 
-    const prompt =
-      type === "exercise"
-        ? `Professional gym demonstration of ${itemName} exercise, correct form, athlete in action, high quality, realistic, 4K resolution, well-lit`
-        : `Delicious and appetizing ${itemName}, professional food photography, well-plated, good lighting, magazine quality, high resolution`;
+    const response = await axios.get(url);
+    const image = response.data.items?.[0]?.link;
+    if (!image) return res.status(404).json({ error: "No image found" });
 
-    let imageUrl;
-
-    // Try Replicate first (best quality)
-    if (REPLICATE_API_KEY) {
-      try {
-        console.log("Trying Replicate API for image generation...");
-
-        // Create prediction
-        const predictionResponse = await axios.post(
-          "https://api.replicate.com/v1/predictions",
-          {
-            version:
-              "a45f82a1d6c31f76a91ff8a8e66f69671123bb46ef812d1da7066aaad44c0215",
-            input: {
-              prompt: prompt,
-              num_outputs: 1,
-              width: 512,
-              height: 512,
-              guidance_scale: 7.5,
-            },
-          },
-          {
-            headers: {
-              Authorization: `Token ${REPLICATE_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            timeout: 30000,
-          }
-        );
-
-        const predictionId = predictionResponse.data.id;
-        let prediction = predictionResponse.data;
-        let attempts = 0;
-        const maxAttempts = 60;
-
-        // Poll for result
-        while (
-          prediction.status !== "succeeded" &&
-          prediction.status !== "failed" &&
-          attempts < maxAttempts
-        ) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-
-          const statusResponse = await axios.get(
-            `https://api.replicate.com/v1/predictions/${predictionId}`,
-            {
-              headers: {
-                Authorization: `Token ${REPLICATE_API_KEY}`,
-              },
-              timeout: 30000,
-            }
-          );
-
-          prediction = statusResponse.data;
-          attempts++;
-        }
-
-        if (
-          prediction.status === "succeeded" &&
-          prediction.output &&
-          prediction.output.length > 0
-        ) {
-          imageUrl = prediction.output[0];
-          console.log("Replicate image generated successfully");
-        } else {
-          throw new Error("Image generation failed or timed out");
-        }
-      } catch (replicateError) {
-        console.log("Replicate failed, trying OpenAI DALL-E...");
-
-        if (!OPENAI_API_KEY) {
-          console.log("No OpenAI key, using placeholder");
-          imageUrl = `https://via.placeholder.com/512x512?text=${encodeURIComponent(
-            itemName
-          )}`;
-        } else {
-          // Fallback to OpenAI
-          try {
-            const dalleResponse = await axios.post(
-              "https://api.openai.com/v1/images/generations",
-              {
-                model: "dall-e-2",
-                prompt: prompt,
-                n: 1,
-                size: "512x512",
-                quality: "standard",
-              },
-              {
-                headers: {
-                  Authorization: `Bearer ${OPENAI_API_KEY}`,
-                  "Content-Type": "application/json",
-                },
-                timeout: 30000,
-              }
-            );
-
-            imageUrl = dalleResponse.data.data[0].url;
-            console.log("OpenAI DALL-E image generated successfully");
-          } catch (dalleError) {
-            console.log("OpenAI DALL-E also failed, using placeholder");
-            imageUrl = `https://via.placeholder.com/512x512?text=${encodeURIComponent(
-              itemName
-            )}`;
-          }
-        }
-      }
-    } else if (OPENAI_API_KEY) {
-      try {
-        console.log("Using OpenAI DALL-E for image generation...");
-
-        const dalleResponse = await axios.post(
-          "https://api.openai.com/v1/images/generations",
-          {
-            model: "dall-e-2",
-            prompt: prompt,
-            n: 1,
-            size: "512x512",
-            quality: "standard",
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${OPENAI_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            timeout: 30000,
-          }
-        );
-
-        imageUrl = dalleResponse.data.data[0].url;
-        console.log("OpenAI DALL-E image generated successfully");
-      } catch (dalleError) {
-        console.log("OpenAI DALL-E failed, using placeholder");
-        imageUrl = `https://via.placeholder.com/512x512?text=${encodeURIComponent(
-          itemName
-        )}`;
-      }
-    } else {
-      // Fallback to placeholder (FREE, no key needed)
-      console.log("No image API available, using placeholder");
-      imageUrl = `https://via.placeholder.com/512x512?text=${encodeURIComponent(
-        itemName
-      )}`;
-    }
-
-    res.json({ imageUrl });
+    res.json({ query, image });
   } catch (error) {
-    console.error("Error in generate-image:", error.message);
-    // Return placeholder as fallback
-    const { itemName } = req.body;
-    res.json({
-      imageUrl: `https://via.placeholder.com/512x512?text=${encodeURIComponent(
-        itemName || "Image"
-      )}`,
-    });
+    console.error("Google Image Search Error:", error.response?.data || error.message);
+    res.status(500).json({ error: "Failed to fetch image" });
   }
 });
+
 
 app.post("/api/text-to-speech", async (req, res) => {
   try {
